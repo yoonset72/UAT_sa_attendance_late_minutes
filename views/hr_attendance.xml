@@ -1,0 +1,83 @@
+<?xml version="1.0" encoding="utf-8"?>
+<odoo>
+
+    <!-- Tree View Inheritance -->
+    <record id="softatt_deductions_inherit_hr_attendance_list" model="ir.ui.view">
+        <field name="name">hr.attendance.tree.inherit.softatt_deductions</field>
+        <field name="model">hr.attendance</field>
+        <field name="inherit_id" ref="hr_attendance.view_attendance_tree" />
+        <field name="arch" type="xml">
+            <xpath expr="//field[@name='check_out']" position="after">
+                <field name="late_minutes" invisible="1"/>
+                <field name="display_late_minutes" widget="float_time" optional="show"/>
+                <field name="deduction_amount" optional="hide" groups="hr_attendance.group_hr_attendance_officer"/>
+                <field name="currency_id" invisible="1" groups="hr_attendance.group_hr_attendance_officer"/>
+                <field name="waved" invisible="1" groups="hr_attendance.group_hr_attendance_officer"/>
+                <button name="action_wave_deduction" 
+                        attrs="{'invisible': ['|', ('waved', '=', True), ('deduction_amount', '=', 0)]}" 
+                        class="btn btn-success" 
+                        type="object" 
+                        string="Waive"  
+                        groups="hr_attendance.group_hr_attendance_officer"/>
+                <button name="action_unwave_deduction" 
+                        attrs="{'invisible': ['|', ('waved', '=', False), ('deduction_amount', '=', 0)]}" 
+                        class="btn btn-danger" 
+                        type="object" 
+                        string="Apply"  
+                        groups="hr_attendance.group_hr_attendance_officer"/>
+            </xpath>
+        </field>
+    </record>
+
+    <!-- Form View Inheritance -->
+    <record id="softatt_deductions_hr_attendance_view_form" model="ir.ui.view">
+        <field name="name">hr_attendance.form.inherit.softatt_deductions</field>
+        <field name="model">hr.attendance</field>
+        <field name="inherit_id" ref="hr_attendance.hr_attendance_view_form" />
+        <field name="arch" type="xml">
+
+            <!-- Add Deduction Badges just inside the sheet -->
+            <xpath expr="//sheet" position="inside">
+                <div class="oe_button_box" name="softatt_deduction_badges">
+                    <div class="float-end fs-6 badge rounded-pill fw-bold text-bg-danger" 
+                         attrs="{'invisible': ['|', ('waved', '=', True), ('deduction_amount', '=', 0)]}" 
+                         groups="hr_attendance.group_hr_attendance_officer">
+                        Deduction Applied
+                    </div>
+                    <div class="float-end fs-6 badge rounded-pill fw-bold text-bg-success" 
+                         attrs="{'invisible': ['|', ('waved', '=', False), ('deduction_amount', '=', 0)]}" 
+                         groups="hr_attendance.group_hr_attendance_officer">
+                        Deduction Waived
+                    </div>
+                </div>
+            </xpath>
+
+            <!-- Add Waive / Apply buttons inside form -->
+            <xpath expr="//sheet" position="inside">
+                <div>
+                    <button name="action_wave_deduction"
+                            attrs="{'invisible': ['|', ('waved', '=', True), ('deduction_amount', '=', 0)]}"
+                            class="btn btn-success"
+                            type="object"
+                            string="Waive"
+                            groups="hr_attendance.group_hr_attendance_officer"/>
+                    <button name="action_unwave_deduction"
+                            attrs="{'invisible': ['|', ('waved', '=', False), ('deduction_amount', '=', 0)]}"
+                            class="btn btn-danger"
+                            type="object"
+                            string="Apply"
+                            groups="hr_attendance.group_hr_attendance_officer"/>
+                </div>
+            </xpath>
+
+            <!-- Add your custom fields after an existing one -->
+            <xpath expr="//field[@name='check_out']" position="after">
+                <field name="late_minutes" invisible="1" force_save="1"/>
+                <field name="display_late_minutes" readonly="1" force_save="1" widget="float_time"/>
+                <field name="deduction_amount" groups="hr_attendance.group_hr_attendance_officer"/>
+                <field name="waved" invisible="1" groups="hr_attendance.group_hr_attendance_officer"/>
+            </xpath>
+        </field>
+    </record>
+
+</odoo>

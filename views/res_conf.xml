@@ -1,0 +1,40 @@
+<?xml version="1.0" encoding="utf-8"?>
+<odoo>
+    <record id="res_config_attendance_lateness_settings_view_form" model="ir.ui.view">
+        <field name="name">res.config.settings.view.form.inherit.hr_attendance</field>
+        <field name="model">res.config.settings</field>
+        <field name="inherit_id" ref="hr_attendance.res_config_settings_view_form" />
+        <field name="arch" type="xml">
+            <!-- Replace <app> with a valid xpath targeting an existing node, for example a group or div -->
+            <xpath expr="//div[@class='settings']" position="inside">
+                <h2>Deduction Settings</h2>
+                <block string="Softatt Settings" name="softatt_settings">
+                    <setting string="Use Lateness Deductions">
+                        <div>   
+                            <span class="text-muted">
+                                Setup a deduction rule on your salary structure and paste the following condition and code.
+                            </span>
+                            <br/>
+                            <br/>
+                            <span class="text-muted">
+                                Condition: 
+                                <br/>
+                                <code>
+                                    result = sum(employee.attendance_ids.filtered(lambda x:x.check_in.date() &gt;= payslip.date_from and x.check_in.date() &lt;= payslip.date_to and not x.waved).mapped('deduction_amount')) &gt; 0
+                                </code>
+                            </span>
+                            <br/>
+                            <span class="text-muted">
+                                Computation:
+                                <br/>
+                                <code>
+                                    result = -sum(employee.attendance_ids.filtered(lambda x:x.check_in.date() &gt;= payslip.date_from and x.check_in.date() &lt;= payslip.date_to and not x.waved).mapped('deduction_amount'))
+                                </code>
+                            </span>
+                        </div>
+                    </setting>
+                </block>
+            </xpath>
+        </field>
+    </record>
+</odoo>
