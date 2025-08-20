@@ -1,7 +1,8 @@
 from odoo import fields, api, _, models
-from datetime import datetime, time as dt_time
+from datetime import datetime as dt, time as dt_time, timedelta
 import pytz
 import logging
+
 
 _logger = logging.getLogger(__name__)
 
@@ -44,7 +45,7 @@ class SaAttendance(models.Model):
             r.late_minutes = 0
             r.display_late_minutes = 0
 
-            if not r.employee_id:
+            if not r.employee_id or not r.check_in:
                 continue
 
             # Collect all calendars for employee
@@ -59,38 +60,67 @@ class SaAttendance(models.Model):
                 continue
             tz = pytz.timezone(r.employee_id.tz)
 
-            # Use check_in if present
-            first_punch = r.check_in
-            if not first_punch:
-                continue
-
             # Localize punch time
-            punch_dt = fields.Datetime.context_timestamp(r, first_punch)
-            weekday_str = str(punch_dt.weekday())  # 0=Monday
+            punch_dt = fields.Datetime.context_timestamp(r, r.check_in)
 
-            _logger.info("Check-in: %s (weekday %s)", punch_dt, weekday_str)
-
-            # Gather all shift start times for that weekday across all calendars
+            # Find all shifts that could include this punch
             possible_shifts = []
             for cal in calendars:
-                for attend in cal.attendance_ids.filtered(lambda a: a.dayofweek == weekday_str and a.day_period != 'break'):
-                    possible_shifts.append(attend.hour_from)
+                for attend in cal.attendance_ids.filtered(lambda a: a.day_period != 'break'):
+                    shift_start = attend.hour_from
+                    shift_end = attend.hour_to
+                    crosses_midnight = shift_end < shift_start
+                    possible_shifts.append({
+                        "start": shift_start,
+                        "end": shift_end,
+                        "crosses_midnight": crosses_midnight,
+                        "calendar": cal,
+                        "dayofweek": int(attend.dayofweek)
+                    })
 
             if not possible_shifts:
                 continue
 
-            # Find the shift start nearest (earlier than or equal) to check-in
+            nearest_shift = None
+            min_diff = 9999
+
             punch_hour_decimal = punch_dt.hour + punch_dt.minute / 60.0
-            nearest_shift_hour = min(possible_shifts, key=lambda h: abs(h - punch_hour_decimal))
 
-            # Build shift start datetime (timezone-aware)
-            naive_shift_dt = datetime.combine(
-                punch_dt.date(), 
-                dt_time(hour=int(nearest_shift_hour), minute=int((nearest_shift_hour % 1) * 60))
-            )
+            for shift in possible_shifts:
+                start, end, crosses_midnight = shift["start"], shift["end"], shift["crosses_midnight"]
+                
+                # Determine punch relation
+                if crosses_midnight:
+                    # Shift from previous day to today
+                    if punch_hour_decimal < end:
+                        # punch after midnight → part of previous day shift
+                        diff = 0  # consider late from previous day start
+                    elif punch_hour_decimal >= start:
+                        diff = abs(punch_hour_decimal - start)
+                    else:
+                        diff = abs(punch_hour_decimal - start)
+                else:
+                    # Normal shift
+                    diff = abs(punch_hour_decimal - start)
+
+                if diff < min_diff:
+                    min_diff = diff
+                    nearest_shift = shift
+
+            if not nearest_shift:
+                continue
+
+            # Compute shift start datetime
+            shift_start_hour = int(nearest_shift["start"])
+            shift_start_min = int(round((nearest_shift["start"] % 1) * 60))
+
+            if nearest_shift["crosses_midnight"] and punch_hour_decimal < nearest_shift["end"]:
+                shift_date = (punch_dt - timedelta(days=1)).date()
+            else:
+                shift_date = punch_dt.date()
+
+            naive_shift_dt = dt.combine(shift_date, dt_time(shift_start_hour, shift_start_min))
             shift_start_dt = tz.localize(naive_shift_dt)
-
-            _logger.info("Nearest shift start time: %s", shift_start_dt)
 
             # Calculate late minutes
             diff_minutes = (punch_dt - shift_start_dt).total_seconds() / 60
