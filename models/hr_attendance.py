@@ -2,7 +2,7 @@ from odoo import fields, api, _, models
 from datetime import datetime as dt, time as dt_time, timedelta
 import pytz
 import logging
-
+import datetime
 
 _logger = logging.getLogger(__name__)
 
@@ -39,101 +39,111 @@ class SaAttendance(models.Model):
         compute="_compute_late_minutes"
     )
 
-    @api.depends("employee_id", "check_in", "check_out")
+    @api.depends("employee_id", "check_in")
     def _compute_late_minutes(self):
-        for r in self:
-            r.late_minutes = 0
-            r.display_late_minutes = 0
+        for rec in self:
+            rec.late_minutes = 0
+            rec.display_late_minutes = 0
 
-            if not r.employee_id or not r.check_in:
+            if not rec.employee_id or not rec.check_in:
                 continue
 
-            # Collect all calendars for employee
-            calendars = r.employee_id.resource_calendar_ids
-            if not calendars and r.employee_id.resource_calendar_id:
-                calendars = r.employee_id.resource_calendar_id
+            # Use Asia/Rangoon timezone
+            tz = pytz.timezone("Asia/Rangoon")
+
+            # Convert UTC check_in to local time
+            punch_dt_utc = fields.Datetime.from_string(rec.check_in)
+            punch_dt = (punch_dt_utc.astimezone(tz) if punch_dt_utc.tzinfo
+                        else pytz.UTC.localize(punch_dt_utc).astimezone(tz))
+            punch_date = punch_dt.date()
+            punch_time = punch_dt.time()
+
+            # Get shift lines, ignoring any that start at 00:00
+            calendars = rec.employee_id.resource_calendar_ids
             if not calendars:
                 continue
 
-            # Ensure timezone exists
-            if not r.employee_id.tz:
-                continue
-            tz = pytz.timezone(r.employee_id.tz)
-
-            # Localize punch time
-            punch_dt = fields.Datetime.context_timestamp(r, r.check_in)
-
-            # Find all shifts that could include this punch
-            possible_shifts = []
+            candidate_starts = []
             for cal in calendars:
-                for attend in cal.attendance_ids.filtered(lambda a: a.day_period != 'break'):
-                    shift_start = attend.hour_from
-                    shift_end = attend.hour_to
-                    crosses_midnight = shift_end < shift_start
-                    possible_shifts.append({
-                        "start": shift_start,
-                        "end": shift_end,
-                        "crosses_midnight": crosses_midnight,
-                        "calendar": cal,
-                        "dayofweek": int(attend.dayofweek)
-                    })
+                lines_today = cal.attendance_ids.filtered(
+                    lambda a: int(a.dayofweek) == punch_date.weekday() and a.day_period != 'break'
+                )
+                for line in lines_today:
+                    shift_start = self._float_hour_to_time(line.hour_from)
+                    if shift_start != datetime.time(0, 0):  # Ignore 00:00 shifts
+                        candidate_starts.append(shift_start)
 
-            if not possible_shifts:
+            candidate_starts = sorted(candidate_starts)
+            if not candidate_starts:
                 continue
 
-            nearest_shift = None
-            min_diff = 9999
+            # Helper: calculate minutes late from a reference time
+            def calc_late(ref_time):
+                ref_dt = tz.localize(datetime.datetime.combine(punch_date, ref_time))
+                return max(0, int((punch_dt - ref_dt).total_seconds() / 60))
 
-            punch_hour_decimal = punch_dt.hour + punch_dt.minute / 60.0
+            first_shift = candidate_starts[0]
+            second_shift = candidate_starts[1] if len(candidate_starts) > 1 else None
+            third_shift = candidate_starts[2] if len(candidate_starts) > 2 else None
+            fallback_1645 = datetime.time(16, 45)
+            cutoff_12 = datetime.time(12, 0)
+            cutoff_15 = datetime.time(15, 0)
 
-            for shift in possible_shifts:
-                start, end, crosses_midnight = shift["start"], shift["end"], shift["crosses_midnight"]
-                
-                # Determine punch relation
-                if crosses_midnight:
-                    # Shift from previous day to today
-                    if punch_hour_decimal < end:
-                        # punch after midnight → part of previous day shift
-                        diff = 0  # consider late from previous day start
-                    elif punch_hour_decimal >= start:
-                        diff = abs(punch_hour_decimal - start)
-                    else:
-                        diff = abs(punch_hour_decimal - start)
-                else:
-                    # Normal shift
-                    diff = abs(punch_hour_decimal - start)
+            late_minutes = 0
+            used_shift = first_shift
 
-                if diff < min_diff:
-                    min_diff = diff
-                    nearest_shift = shift
+            # Rule 1: Before first shift -> no late
+            if punch_time < first_shift:
+                late_minutes = 0
+                used_shift = first_shift
 
-            if not nearest_shift:
-                continue
+            # Rule 2: Between first shift start and 12:00 -> late from first shift
+            elif first_shift <= punch_time < cutoff_12:
+                late_minutes = calc_late(first_shift)
+                used_shift = first_shift
 
-            # Compute shift start datetime
-            shift_start_hour = int(nearest_shift["start"])
-            shift_start_min = int(round((nearest_shift["start"] % 1) * 60))
+            # Rule 3: Between 12:00 and second shift start -> no late
+            elif second_shift and cutoff_12 <= punch_time < second_shift:
+                late_minutes = 0
+                used_shift = second_shift
 
-            if nearest_shift["crosses_midnight"] and punch_hour_decimal < nearest_shift["end"]:
-                shift_date = (punch_dt - timedelta(days=1)).date()
-            else:
-                shift_date = punch_dt.date()
+            # Rule 4: Between second shift start and 15:00 -> late from second shift
+            elif second_shift and second_shift <= punch_time < cutoff_15:
+                late_minutes = calc_late(second_shift)
+                used_shift = second_shift
 
-            naive_shift_dt = dt.combine(shift_date, dt_time(shift_start_hour, shift_start_min))
-            shift_start_dt = tz.localize(naive_shift_dt)
+            # Rule 5: Between 15:00 and third shift start (if exists) -> no late
+            elif third_shift and cutoff_15 <= punch_time < third_shift:
+                late_minutes = 0
+                used_shift = third_shift
 
-            # Calculate late minutes
-            diff_minutes = (punch_dt - shift_start_dt).total_seconds() / 60
-            r.late_minutes = max(0, int(diff_minutes))
-            r.display_late_minutes = round(r.late_minutes / 60.0, 2)
+            # Rule 6: After last shift -> late from 16:45 (fallback) if time >= 16:45
+            elif punch_time >= fallback_1645:
+                late_minutes = calc_late(fallback_1645)
+                used_shift = fallback_1645
+
+            # Update record
+            rec.late_minutes = late_minutes
+            rec.display_late_minutes = round(late_minutes / 60.0, 2)
+
+            # Debug log
+            _logger.info(
+                "[LATE] Employee: %s | Punch: %s | Used Shift Start: %s | Late Minutes: %d",
+                rec.employee_id.name,
+                punch_dt.strftime("%m/%d/%Y %H:%M:%S"),
+                used_shift.strftime("%H:%M"),
+                late_minutes
+            )
 
     @staticmethod
     def _float_hour_to_time(float_hour):
-        """Convert a float hour (e.g., 8.5) to a time object (08:30)."""
-        hours = int(float_hour)
-        minutes = int(round((float_hour % 1) * 60))
-        return dt_time(hour=hours, minute=minutes)
-
+        h = int(float_hour)
+        m = int(round((float_hour - h) * 60))
+        return datetime.time(h, m)
+    
+    @staticmethod
+    def _time_to_minutes(t):
+        return t.hour * 60 + t.minute
 
     @api.model_create_multi
     def create(self, vals_list):
